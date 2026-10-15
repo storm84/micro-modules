@@ -2,60 +2,133 @@
 
 A lightweight .NET 10 library for hosting the same module independently or alongside other modules. Application code injects a C# interface; host composition determines whether its calls execute in process or over HTTP.
 
-This repository contains the library and a runnable A/C/BIG proof of concept. Version 0.1.0 supports request/response communication, runtime proxies, and ordered remote failover.
+This repository contains the library and a runnable parcel-booking sample. Version 0.1.0 supports request/response communication, runtime proxies, and ordered remote failover.
 
-## Run the demonstration
+## Run the parcel-booking sample
 
-Prerequisites: a .NET 10 SDK, Python 3, and Docker with Compose. Ports 5101–5104 and 55432 must be available. `global.json` pins the solution to SDK 10.0.401 with patch roll-forward.
+A fictional shop books a domestic Swedish parcel, follows its tracking history, and receives a booking confirmation and a delivery notification. The same module implementations run in separate processes or together in one host.
+
+Prerequisites: a .NET 10 SDK, Python 3, and Docker with Compose. Ports 5101–5105 and 55432 must be available. `global.json` pins SDK 10.0.401 with patch roll-forward.
 
 ```sh
 python3 scripts/poc.py
 ```
 
-The script builds the solution, starts Postgres, and launches three separate .NET processes:
+The launcher builds the solution, starts Postgres, applies the sample schema, and launches four hosts:
 
-| Host | URL | Hosted modules | Calls to C |
+| Host | URL | Local modules | Calls |
 |---|---|---|---|
-| A | http://127.0.0.1:5101 | A | HTTP, standalone C preferred |
-| C | http://127.0.0.1:5102 | C | Local implementation |
-| BIG | http://127.0.0.1:5103 | B and C | B → C in process |
+| BookingApi | http://127.0.0.1:5101 | Booking | Rates, Shipments, and Notifications over HTTP; ShipmentService preferred, AllInOne fallback |
+| ShipmentService | http://127.0.0.1:5102 | Rates, Shipments, Notifications | Shipments → Rates and outbox worker → Notifications in process |
+| AllInOne | http://127.0.0.1:5103 | All four modules | All module calls in process |
+| WebApp | http://127.0.0.1:5105 | None | Shipments and Notifications over HTTP; ShipmentService preferred, AllInOne fallback |
 
-At the `poc>` prompt, use `status`, `stop-c`, `start-c`, or `quit`. `stop-c` makes A fall back to C inside BIG; `start-c` restores its preferred endpoint. Ctrl-C and `quit` stop the host processes started by the script. Postgres and its data remain available.
+At the `parcel>` prompt:
 
-In another terminal:
+- `demo` books a fresh parcel, waits for confirmation, simulates collection/transit/delivery, and prints the history and both notifications.
+- `stop-shipments` makes BookingApi fall back to AllInOne.
+- `start-shipments` restores its preferred service.
+- `status` shows running host processes; `quit` or Ctrl-C stops them.
+
+Postgres and its data remain available. AllInOne also works when both other hosts are stopped. The two service hosts use the same logical database, and either can process pending notifications.
+
+### Open the web app
+
+Browse [Parcel desk](http://127.0.0.1:5105) to view shipments, tracking history, and the demo notification inbox. Select a shipment, enter a subject and message, and send a custom notification to its stored customer email. Delivery is simulated through the same durable outbox as automatic notifications. The page waits for the new message to appear in the inbox.
+
+Shipments are listed newest first, with Newer/Older paging and a Refresh button. If the database is empty, enter `demo` at the launcher's prompt to create a shipment. Use `stop-shipments` to see the web app continue through AllInOne.
+
+WebApp references only `MicroModules` and `Parcel.Contracts`. It registers remote Shipments and Notifications contracts, serves static HTML/CSS/JavaScript, and maps thin `/api` adapters for the browser. It has no local modules, database connection, outbox worker, or module endpoints. The other hosts own all business validation and persistence.
+
+### Walk through the APIs
+
+Open [BookingApi Scalar](http://127.0.0.1:5101/scalar) or use these requests. All operations use POST with JSON bodies.
+
+Get a quote:
 
 ```sh
-# A calls standalone C, or C inside BIG when standalone C is stopped.
-curl -s http://127.0.0.1:5101/modules/a/v1/get-counter \
-  -H 'Content-Type: application/json' -d '{}'
-
-# B calls C in the BIG process.
-curl -s http://127.0.0.1:5103/modules/b/v1/get-counter \
-  -H 'Content-Type: application/json' -d '{}'
-
-# Reuse this ID to replay the same operation safely through either host.
-curl -s http://127.0.0.1:5101/modules/a/v1/increment-counter \
+curl -s http://127.0.0.1:5101/modules/booking/v1/quote \
   -H 'Content-Type: application/json' \
-  -d '{"operationId":"df8b1c94-d3bc-4a50-8357-17490366ca5b","amount":1}'
+  -d '{"weightGrams":1500,"service":"standard","destinationCountry":"SE"}'
 ```
 
-Responses include `counter.value` and `counter.servedBy` (`C` or `BIG`). Logs in `artifacts/poc/` identify `local`, `http-client`, and `http-server` execution.
+The fictional `standard` service costs 49 SEK plus 10 SEK per started kilogram; `express` costs 79 SEK plus the same weight charge. Parcels must weigh 1–20000 grams. Quotes and bookings support Swedish addresses with five-digit postal codes only. Prices are deterministic and have no external dependencies.
 
-Run the complete automated topology demonstration with:
+Book a parcel:
+
+```sh
+curl -s http://127.0.0.1:5101/modules/booking/v1/book \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "operationId":"df8b1c94-d3bc-4a50-8357-17490366ca5b",
+    "sender":{"name":"Demo Shop","street":"Shop Street 1","postalCode":"11122","city":"Stockholm","country":"SE"},
+    "recipient":{"name":"Alex Example","street":"Example Street 2","postalCode":"41103","city":"Gothenburg","country":"SE"},
+    "customerEmail":"alex@example.test",
+    "weightGrams":1500,
+    "service":"standard"
+  }'
+```
+
+The response contains `shipment.id`, a synthetic `DEMO-` tracking number, the accepted quote, initial `Booked` event, and `servedBy` (`ShipmentService` or `AllInOne`). The booking implementation obtains the price from Rates; callers do not submit an authoritative price.
+
+Reuse the operation ID and identical payload through either host to retrieve the original booking. Use a fresh operation ID for a new parcel; changing a committed operation's request returns a 409 `operation-id-conflict`.
+
+Copy the shipment ID into these requests:
+
+```sh
+curl -s http://127.0.0.1:5101/modules/booking/v1/get-booking \
+  -H 'Content-Type: application/json' -d '{"shipmentId":"SHIPMENT_ID"}'
+
+curl -s http://127.0.0.1:5101/modules/booking/v1/simulate-tracking \
+  -H 'Content-Type: application/json' \
+  -d '{"operationId":"d3a9b6dd-7256-4ee6-8919-7bff4a9cb69d","shipmentId":"SHIPMENT_ID","status":"Collected"}'
+```
+
+Advance through `Collected`, `InTransit`, then `Delivered`, using a fresh operation ID for each event. Invalid transitions return 409. Tracking history is append-only, with UTC timestamps. Duplicate tracking operations replay their original result even after later transitions.
+
+`get-booking` combines current shipment details with delivered notifications. Notifications arrive asynchronously; poll again if the inbox is empty immediately after booking or delivery. They contain the recipient email, subject, and body, but no actual email is sent.
+
+### List shipments and send custom notifications
+
+These operations belong to Shipments and are available on ShipmentService and AllInOne:
+
+```sh
+curl -s http://127.0.0.1:5102/modules/shipments/v1/list \
+  -H 'Content-Type: application/json' -d '{"offset":0,"limit":20}'
+
+curl -s http://127.0.0.1:5102/modules/shipments/v1/send-notification \
+  -H 'Content-Type: application/json' \
+  -d '{"operationId":"7a026c9e-984f-41c3-ad12-186ae88c5208","shipmentId":"SHIPMENT_ID","subject":"A parcel update","body":"Thank you for your order."}'
+```
+
+Listing returns shipment summaries, `hasMore`, and `servedBy`. Offset must be non-negative and limit must be 1–100. Custom notifications require a subject of up to 200 characters and a body of up to 4000 characters; the shipment determines the recipient email. The response is a durable queue receipt. Replaying the same operation ID and payload returns the same receipt; changing its payload returns 409. A missing shipment returns 404 without queueing a message.
+
+### Durable notification delivery
+
+Shipments saves each booking/tracking change, its operation result, and any notification outbox entry in one Postgres transaction. Booking and delivery create automatic notifications; custom notifications use the same transaction and outbox path. A small worker invokes the Notifications module, which stores messages in the demo inbox using a unique notification ID.
+
+Both service hosts run workers. Row locking with `SKIP LOCKED` prevents them processing the same pending row simultaneously. Failed delivery is retried after two seconds, with attempts and the latest error recorded in the outbox. Delivery and acknowledgement commit separately: a crash between them causes a safe replay rather than a second inbox message. Booking succeeds once its transaction commits, independently of notification delivery.
+
+The worker is application code in the sample. MicroModules does not provide durable events or outbox processing. `Outbox:Enabled=false` disables a host's worker for restart demonstrations and testing.
+
+### Automated verification and retained data
 
 ```sh
 python3 scripts/poc.py smoke
 ```
 
-It checks failover, recovery, shared data, concurrent writes, conflicting operation IDs, simultaneous duplicate requests across both C hosts, and a write whose response is lost after commit. A test-only forwarding proxy on port 5104 creates the lost-response case; the application has no fault-injection endpoints. The smoke test uses fresh operation IDs and checks relative counter values, so it works against retained demo data.
+This checks quotes, validation, the full parcel lifecycle, local and remote execution, shared data, concurrent writes, operation conflicts, duplicate requests, failover, recovery, pending notifications across restarts, and lost responses after booking and custom-notification commits. It also checks the remote-only web APIs, shipment paging, notification validation and replay, and service-unavailable errors. A test-only forwarding proxy on port 5104 creates the lost-response case; the application has no fault-injection endpoints.
 
-Stop the database without deleting its data:
+The smoke run also executes parcel database tests in temporary isolated schemas, covering failed delivery, delivery before acknowledgement failure, competing dispatchers, and conflicting tracking transitions. It uses fresh IDs and retained data safely. Logs are written under `artifacts/poc/`.
+
+The launcher applies the idempotent schema on every run, including against an existing counter-demo volume. Old counter tables remain unused; no data reset is required.
 
 ```sh
+# Stop the database and retain its data.
 docker compose down
 ```
 
-To deliberately reset the demo, stop the hosts and run `docker compose down --volumes`. This deletes the demo database. Its schema is initialized when Compose creates a new data volume.
+To deliberately reset the demo, stop the hosts and run `docker compose down --volumes`. This deletes the demo database.
 
 ## Define a module
 
@@ -64,15 +137,15 @@ Put DTOs and interfaces in a contracts assembly shared by callers and hosts. The
 ```csharp
 using MicroModules;
 
-public sealed record GetCounterRequest;
-public sealed record CounterResult(long Value, string ServedBy);
+public sealed record QuoteRequest(int WeightGrams, string Service);
+public sealed record QuoteResult(decimal Price, string Currency);
 
-[ModuleContract("c", Version = 1)]
-public interface ICModule
+[ModuleContract("rates", Version = 1)]
+public interface IRatesModule
 {
-    [ModuleOperation("get-counter", RetrySafe = true)]
-    Task<CounterResult> GetCounterAsync(
-        GetCounterRequest request,
+    [ModuleOperation("quote", RetrySafe = true)]
+    Task<QuoteResult> QuoteAsync(
+        QuoteRequest request,
         CancellationToken cancellationToken);
 }
 ```
@@ -80,28 +153,28 @@ public interface ICModule
 Implement the interface as an ordinary class. Constructor injection works normally. Keep business validation and authorization in the implementation when they must apply to both local and remote callers.
 
 ```csharp
-public sealed class CModule(ICounterStore store) : ICModule
+public sealed class RatesModule : IRatesModule
 {
-    public async Task<CounterResult> GetCounterAsync(
-        GetCounterRequest request, CancellationToken cancellationToken)
-        => new(await store.GetAsync(cancellationToken), "my-host");
+    public Task<QuoteResult> QuoteAsync(QuoteRequest request, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (request.WeightGrams is < 1 or > 20000 || request.Service != "standard")
+            throw new ModuleFaultException("invalid-parcel", "Choose standard and a weight from 1 to 20000 grams.");
+        return Task.FromResult(new QuoteResult(49m + 10m * decimal.Ceiling(request.WeightGrams / 1000m), "SEK"));
+    }
 }
 ```
 
-`ICounterStore` represents the application's own storage dependency; the library does not define one.
-
-A consuming module simply injects `ICModule` and calls it. It references the contracts, not C's implementation or HTTP details.
+A consuming module injects `IRatesModule` and calls it. It references the contracts, not Rates' implementation or HTTP details. The full sample adds shipment persistence and notification delivery as ordinary application dependencies.
 
 ### Compose a host
 
 Hosts exposing HTTP reference `MicroModules.AspNetCore`. Remote-only callers need only `MicroModules`.
 
 ```csharp
-builder.Services.AddScoped<ICounterStore, CounterStore>();
 builder.Services.AddMicroModules(modules =>
 {
-    modules.AddLocal<IBModule, BModule>();
-    modules.AddLocal<ICModule, CModule>();
+    modules.AddLocal<IRatesModule, RatesModule>();
 });
 
 var app = builder.Build();
@@ -116,15 +189,14 @@ For a remotely hosted dependency:
 ```csharp
 builder.Services.AddMicroModules(modules =>
 {
-    modules.AddLocal<IAModule, AModule>();
-    modules.AddRemote<ICModule>(builder.Configuration.GetSection("MicroModules:C"));
+    modules.AddRemote<IRatesModule>(builder.Configuration.GetSection("MicroModules:Rates"));
 });
 ```
 
 ```json
 {
   "MicroModules": {
-    "C": {
+    "Rates": {
       "Endpoints": ["http://127.0.0.1:5102", "http://127.0.0.1:5103"],
       "AttemptTimeoutSeconds": 2,
       "TotalTimeoutSeconds": 5
@@ -136,10 +208,10 @@ builder.Services.AddMicroModules(modules =>
 Programmatic registration is also supported:
 
 ```csharp
-modules.AddRemote<ICModule>(options =>
+modules.AddRemote<IRatesModule>(options =>
 {
-    options.Endpoints.Add(new Uri("https://c.internal"));
-    options.Endpoints.Add(new Uri("https://big.internal"));
+    options.Endpoints.Add(new Uri("https://rates.internal"));
+    options.Endpoints.Add(new Uri("https://combined.internal"));
 });
 ```
 
@@ -166,7 +238,7 @@ Caller cancellation, business faults, other HTTP errors, redirects, and incompat
 
 Marking an operation `RetrySafe` declares an application guarantee. It does not create an idempotency key or persist anything. A request can commit before its response is lost, so safe writes need shared deduplication or genuinely idempotent semantics.
 
-The POC implements this inside C using Postgres: insert the operation ID, atomically update the counter, and record the result in one transaction. Concurrent duplicates wait for the winning transaction and return its stored value. A reused ID with a different amount produces a 409 fault. `servedBy` describes the deployment returning the result; the stored counter value remains the same on replay. The library has no Postgres dependency.
+The parcel sample implements this inside Shipments using Postgres: reserve the operation ID, apply the booking or tracking change, enqueue notifications, and record the result in one transaction. Concurrent duplicates wait for the winning transaction and return its stored result. A reused ID with a different request produces a 409 fault. `servedBy` describes the deployment returning the result; shipment data remains the same on replay. The library has no Postgres dependency.
 
 | Condition | Caller behavior |
 |---|---|
@@ -187,7 +259,7 @@ builder.Services.AddHttpClient(MicroModuleServiceCollectionExtensions.HttpClient
 
 Preserve the infinite `HttpClient.Timeout`; MicroModules supplies attempt and total cancellation budgets. Additional handlers should not introduce hidden retries for writes. The named client applies to all remote module contracts in this host.
 
-`app.MapMicroModules()` returns a route group, so standard endpoint conventions such as `.RequireAuthorization()` apply. Configure ASP.NET authentication/authorization normally. HTTP endpoint authorization protects remote access; authorization needed for local calls also belongs in module/application logic. The unauthenticated, loopback-bound POC is a local demonstration.
+`app.MapMicroModules()` returns a route group, so standard endpoint conventions such as `.RequireAuthorization()` apply. Configure ASP.NET authentication/authorization normally. HTTP endpoint authorization protects remote access; authorization needed for local calls also belongs in module/application logic. The unauthenticated, loopback-bound parcel sample is a local demonstration with fictional customer data.
 
 The library uses standard `ILogger` and the `MicroModules` ActivitySource, with module ID, operation, version, execution mode, duration, and endpoint information. An OpenTelemetry listener can subscribe using `.AddSource("MicroModules")`; no telemetry exporter is bundled.
 
@@ -213,13 +285,13 @@ app.Run();
 
 The default routes are `/scalar` for the interactive reference and `/openapi/v1.json` for the document. Module operations are grouped by module ID and show their request/response DTO schemas; operations returning `Task` document HTTP 204. Remote-only module registrations are not exposed or documented as local APIs. The `v1` document name is independent of module contract versions: one document includes all versions exposed by this host, along with its other HTTP APIs.
 
-Each POC host opts in during Development, as set by the launch script. Browse:
+Each sample host opts in during Development, as set by the launch script. Browse:
 
-- A: http://127.0.0.1:5101/scalar
-- Standalone C: http://127.0.0.1:5102/scalar
-- BIG: http://127.0.0.1:5103/scalar
+- BookingApi: http://127.0.0.1:5101/scalar
+- ShipmentService: http://127.0.0.1:5102/scalar
+- AllInOne: http://127.0.0.1:5103/scalar
 
-Use the reference to send a JSON request, including `{}` for counter reads. BIG lists both B and C; A lists its A operations and calls C remotely when those operations execute.
+BookingApi documents Booking operations; ShipmentService documents Rates, Shipments, and Notifications; AllInOne documents all four modules. Requests through BookingApi invoke its dependencies remotely, while AllInOne invokes the same contracts locally.
 
 Customize the document using standard OpenAPI options, and the UI using standard Scalar options:
 
@@ -256,3 +328,5 @@ Only the three library projects are packable. The packages are created locally; 
 Tests exercise in-process invocation with an HTTP handler that fails if called, scoped dependencies, automatic endpoints, business faults, malformed bodies/results, cancellation, time budgets, and retry policy. `scripts/poc.py smoke` supplies the real Postgres and multi-process verification.
 
 Library source lives under `src/`, the modules and hosts under `samples/`, and tests under `tests/`.
+
+Parcel tests run as part of the solution. Database tests are skipped unless `PARCEL_TEST_CONNECTION` is set; `scripts/poc.py smoke` supplies the local demo connection automatically. They create and remove only their own randomly named schemas.

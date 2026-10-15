@@ -11,15 +11,15 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MicroModules.AspNetCore", "
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "samples", "samples", "{5D20AA90-6969-D8BD-9DCD-8634F4692FDA}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Poc.Contracts", "samples\Poc.Contracts\Poc.Contracts.csproj", "{2357CAFE-F772-4F0C-BCC1-29BE4E90FBC1}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Parcel.Contracts", "samples\Parcel.Contracts\Parcel.Contracts.csproj", "{2357CAFE-F772-4F0C-BCC1-29BE4E90FBC1}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Poc.Modules", "samples\Poc.Modules\Poc.Modules.csproj", "{3DD568E7-F1AA-4FF0-9834-51CAA3EE9DC9}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Parcel.Modules", "samples\Parcel.Modules\Parcel.Modules.csproj", "{3DD568E7-F1AA-4FF0-9834-51CAA3EE9DC9}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HostA", "samples\HostA\HostA.csproj", "{2D1521A3-317C-425D-A8B5-86517891C51E}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BookingApi", "samples\BookingApi\BookingApi.csproj", "{2D1521A3-317C-425D-A8B5-86517891C51E}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HostC", "samples\HostC\HostC.csproj", "{EF459794-52FC-477E-9D52-FF2D57900320}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ShipmentService", "samples\ShipmentService\ShipmentService.csproj", "{EF459794-52FC-477E-9D52-FF2D57900320}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HostBig", "samples\HostBig\HostBig.csproj", "{E936D9B3-5458-4CC5-B0F4-469B9359DDE6}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AllInOne", "samples\AllInOne\AllInOne.csproj", "{E936D9B3-5458-4CC5-B0F4-469B9359DDE6}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
 EndProject
@@ -28,6 +28,10 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MicroModules.Scalar", "src\MicroModules.Scalar\MicroModules.Scalar.csproj", "{F9D5A3E5-13CB-4073-9504-A7A9B3FE9167}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MicroModules.Scalar.Tests", "tests\MicroModules.Scalar.Tests\MicroModules.Scalar.Tests.csproj", "{E9E52C41-052F-450E-AA6C-07957532E232}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Parcel.Tests", "tests\Parcel.Tests\Parcel.Tests.csproj", "{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WebApp", "samples\WebApp\WebApp.csproj", "{B47699E7-8594-43A2-A946-19D9614CB842}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -159,6 +163,30 @@ Global
 		{E9E52C41-052F-450E-AA6C-07957532E232}.Release|x64.Build.0 = Release|Any CPU
 		{E9E52C41-052F-450E-AA6C-07957532E232}.Release|x86.ActiveCfg = Release|Any CPU
 		{E9E52C41-052F-450E-AA6C-07957532E232}.Release|x86.Build.0 = Release|Any CPU
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}.Debug|x64.Build.0 = Debug|Any CPU
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}.Debug|x86.Build.0 = Debug|Any CPU
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}.Release|Any CPU.Build.0 = Release|Any CPU
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}.Release|x64.ActiveCfg = Release|Any CPU
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}.Release|x64.Build.0 = Release|Any CPU
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}.Release|x86.ActiveCfg = Release|Any CPU
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995}.Release|x86.Build.0 = Release|Any CPU
+		{B47699E7-8594-43A2-A946-19D9614CB842}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B47699E7-8594-43A2-A946-19D9614CB842}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B47699E7-8594-43A2-A946-19D9614CB842}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B47699E7-8594-43A2-A946-19D9614CB842}.Debug|x64.Build.0 = Debug|Any CPU
+		{B47699E7-8594-43A2-A946-19D9614CB842}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B47699E7-8594-43A2-A946-19D9614CB842}.Debug|x86.Build.0 = Debug|Any CPU
+		{B47699E7-8594-43A2-A946-19D9614CB842}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B47699E7-8594-43A2-A946-19D9614CB842}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B47699E7-8594-43A2-A946-19D9614CB842}.Release|x64.ActiveCfg = Release|Any CPU
+		{B47699E7-8594-43A2-A946-19D9614CB842}.Release|x64.Build.0 = Release|Any CPU
+		{B47699E7-8594-43A2-A946-19D9614CB842}.Release|x86.ActiveCfg = Release|Any CPU
+		{B47699E7-8594-43A2-A946-19D9614CB842}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -174,5 +202,7 @@ Global
 		{DBBBD9D8-D3CE-4354-9B2C-605ABD5C802E} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{F9D5A3E5-13CB-4073-9504-A7A9B3FE9167} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{E9E52C41-052F-450E-AA6C-07957532E232} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{43CB9D7B-98BB-4A9A-9A8A-FD912A622995} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{B47699E7-8594-43A2-A946-19D9614CB842} = {5D20AA90-6969-D8BD-9DCD-8634F4692FDA}
 	EndGlobalSection
 EndGlobal

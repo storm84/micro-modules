@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><IsPackable>false</IsPackable></PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../Poc.Contracts/Poc.Contracts.csproj" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../Parcel.Contracts/Parcel.Contracts.csproj" />
     <PackageReference Include="Npgsql" Version="10.0.0" />
   </ItemGroup>
 </Project>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Parcel desk</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead"><div class="shell brand"><span class="brand-mark" aria-hidden="true">P</span><span>Parcel desk</span><span class="demo-label">Demo workspace</span></div></header>
+  <main class="shell">
+    <div class="page-heading"><div><p class="eyebrow">CUSTOMER OPERATIONS</p><h1>Your shipments, in view.</h1><p class="intro">Follow a parcel’s journey and keep its customer informed.</p></div><button id="refresh" class="secondary" type="button">Refresh shipments</button></div>
+    <p id="page-message" role="status" aria-live="polite"></p>
+    <div class="workspace">
+      <section class="panel shipments" aria-labelledby="shipments-heading">
+        <div class="panel-heading"><h2 id="shipments-heading">Shipments</h2><span id="page-range" class="muted"></span></div>
+        <div id="shipment-list" aria-busy="true"><p class="placeholder">Loading shipments…</p></div>
+        <div class="pagination"><button id="previous" class="secondary" type="button" disabled>Newer</button><button id="next" class="secondary" type="button" disabled>Older</button></div>
+      </section>
+      <section id="detail-panel" class="panel detail" aria-label="Shipment details">
+        <div id="detail-empty" class="empty-detail"><span class="parcel-symbol" aria-hidden="true">↗</span><h2 id="detail-heading">A closer look</h2><p id="detail-empty-message" class="muted">Select a shipment to see its journey and customer messages.</p></div>
+        <div id="detail-content" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">SHIPMENT DETAILS</p><h2 id="recipient-name"></h2></div><span id="shipment-status" class="status"></span></div>
+          <p id="tracking-number" class="tracking-number"></p>
+          <dl id="shipment-facts" class="facts"></dl>
+          <section class="detail-section" aria-labelledby="journey-heading"><h3 id="journey-heading">Tracking history</h3><ol id="tracking-history" class="timeline"></ol></section>
+          <section class="detail-section" aria-labelledby="messages-heading"><div class="section-heading"><h3 id="messages-heading">Customer notifications</h3><span id="notification-count" class="count">0</span></div><div id="notification-list"></div></section>
+          <section class="detail-section compose" aria-labelledby="compose-heading">
+            <h3 id="compose-heading">Send a custom notification</h3><p class="muted">Send a message to <strong id="notification-email"></strong>. Messages are delivered to this demo inbox.</p>
+            <form id="notification-form">
+              <label for="subject">Subject</label><input id="subject" name="subject" maxlength="200" required placeholder="An update about your parcel">
+              <label for="body">Message</label><textarea id="body" name="body" rows="4" maxlength="4000" required placeholder="Write your customer update…"></textarea>
+              <div class="send-row"><button id="send" type="submit">Send notification</button><span class="muted">Simulated delivery</span></div>
+            </form>
+            <p id="send-message" role="status" aria-live="polite"></p>
+          </section>
+          <p id="served-by" class="served-by"></p>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
