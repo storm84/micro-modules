@@ -9,7 +9,7 @@ services:
       - "127.0.0.1:55432:5432"
     volumes:
       - poc-postgres:/var/lib/postgresql
-      - ./samples/database/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+      - ./samples/database:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U micro_modules -d micro_modules"]
       interval: 2s

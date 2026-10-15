@@ -30,7 +30,7 @@ public sealed class RegistrationTests
     public void Invalid_contracts_fail_during_registration(Type contract)
     {
         var generic = typeof(MicroModuleBuilder).GetMethods()
-            .Single(method => method.Name == "AddRemote" &&
+            .Single(method => method.Name == "AddRemote" && method.GetParameters().Length == 1 &&
                               method.GetParameters()[0].ParameterType == typeof(Action<RemoteModuleOptions>));
         var error = Assert.Throws<System.Reflection.TargetInvocationException>(() =>
             new ServiceCollection().AddMicroModules(modules => generic.MakeGenericMethod(contract)

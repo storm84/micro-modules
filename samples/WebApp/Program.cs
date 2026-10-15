@@ -1,12 +1,13 @@
 using MicroModules;
 using Parcel.Contracts;
+using Parcel.Modules;
 
 var builder = WebApplication.CreateBuilder(args);
-// This host references contracts only. Every module invocation uses HTTP.
-builder.Services.AddMicroModules(modules =>
+// Execution mode and resources are selected independently for each module in configuration.
+builder.Services.AddMicroModules(builder.Configuration, modules =>
 {
-    modules.AddRemote<IShipmentsModule>(builder.Configuration.GetSection("MicroModules:Services"));
-    modules.AddRemote<INotificationsModule>(builder.Configuration.GetSection("MicroModules:Services"));
+    modules.AddModule<IShipmentsModule, ShipmentsModule>();
+    modules.AddModule<INotificationsModule, NotificationsModule>();
 });
 var app = builder.Build();
 app.Use(async (context, next) =>
@@ -46,7 +47,7 @@ app.MapPost("/api/shipments/{id:guid}/notifications", async (Guid id, CustomNoti
     var queued = await shipments.SendNotificationAsync(new(input.OperationId, id, input.Subject, input.Body), token);
     return Results.Json(queued, statusCode: 202);
 });
-// No AddLocal registrations, module implementations, database access, or MapMicroModules here.
+// Module setup owns resources and workers. This web host exposes only its browser adapters.
 app.Run();
 
 public sealed record CustomNotificationInput(Guid OperationId, string Subject, string Body);

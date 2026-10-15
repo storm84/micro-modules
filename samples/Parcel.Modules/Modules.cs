@@ -3,14 +3,21 @@ using System.Text.RegularExpressions;
 using MicroModules;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Npgsql;
+using Microsoft.Extensions.Hosting;
 using Parcel.Contracts;
 
 namespace Parcel.Modules;
 
 public sealed class BookingModule(IRatesModule rates, IShipmentsModule shipments,
-    INotificationsModule notifications) : IBookingModule
+    INotificationsModule notifications) : IBookingModule, IMicroModule
 {
+    public static void Configure(ModuleSetupContext module)
+    {
+        module.AddDependency<IRatesModule, RatesModule>();
+        module.AddDependency<IShipmentsModule, ShipmentsModule>();
+        module.AddDependency<INotificationsModule, NotificationsModule>();
+    }
+
     public Task<Quote> QuoteAsync(QuoteRequest request, CancellationToken cancellationToken)
         => rates.QuoteAsync(request, cancellationToken);
 
@@ -48,10 +55,19 @@ public sealed class RatesModule : IRatesModule
     }
 }
 
-public sealed record SampleHostIdentity(string Name);
-
-public sealed class ShipmentsModule(ParcelStore store, IRatesModule rates, SampleHostIdentity host) : IShipmentsModule
+public sealed class ShipmentsModule(ShipmentStore store, IRatesModule rates, IHostEnvironment host) : IShipmentsModule, IMicroModule
 {
+    public static void Configure(ModuleSetupContext module)
+    {
+        module.AddDependency<IRatesModule, RatesModule>();
+        module.AddDependency<INotificationsModule, NotificationsModule>();
+        var connectionString = DatabaseSettings.ConnectionString(module);
+        module.Services.AddSingleton(_ => new ShipmentsDatabase(connectionString));
+        module.Services.AddScoped<ShipmentStore>();
+        if (module.Configuration.GetValue("Outbox:Enabled", true))
+            module.Services.AddHostedService<NotificationOutboxWorker>();
+    }
+
     public async Task<ShipmentResult> BookAsync(BookParcelRequest request, CancellationToken cancellationToken)
     {
         ValidateAddress(request.Sender);
@@ -60,21 +76,21 @@ public sealed class ShipmentsModule(ParcelStore store, IRatesModule rates, Sampl
             throw new ModuleFaultException("invalid-email", "Provide a customer email address.");
         var quote = await rates.QuoteAsync(new(request.WeightGrams, request.Service, request.Recipient.Country), cancellationToken);
         var shipment = await store.BookAsync(request, quote, cancellationToken);
-        return new(shipment, host.Name);
+        return new(shipment, host.ApplicationName);
     }
 
     public async Task<ShipmentResult> GetAsync(ShipmentRequest request, CancellationToken cancellationToken)
-        => new(await store.GetAsync(request.ShipmentId, cancellationToken), host.Name);
+        => new(await store.GetAsync(request.ShipmentId, cancellationToken), host.ApplicationName);
 
     public async Task<ShipmentResult> SimulateTrackingAsync(TrackingUpdateRequest request, CancellationToken cancellationToken)
-        => new(await store.UpdateTrackingAsync(request, cancellationToken), host.Name);
+        => new(await store.UpdateTrackingAsync(request, cancellationToken), host.ApplicationName);
 
     public async Task<ShipmentList> ListAsync(ListShipmentsRequest request, CancellationToken cancellationToken)
     {
         if (request.Offset < 0 || request.Limit is < 1 or > 100)
             throw new ModuleFaultException("invalid-page", "Offset must be non-negative and limit must be between 1 and 100.");
         var items = await store.ListAsync(request, cancellationToken);
-        return new(items.Take(request.Limit).ToArray(), items.Length > request.Limit, host.Name);
+        return new(items.Take(request.Limit).ToArray(), items.Length > request.Limit, host.ApplicationName);
     }
 
     public Task<QueuedNotification> SendNotificationAsync(SendCustomNotificationRequest request,
@@ -96,8 +112,15 @@ public sealed class ShipmentsModule(ParcelStore store, IRatesModule rates, Sampl
     }
 }
 
-public sealed class NotificationsModule(ParcelStore store) : INotificationsModule
+public sealed class NotificationsModule(NotificationStore store) : INotificationsModule, IMicroModule
 {
+    public static void Configure(ModuleSetupContext module)
+    {
+        var connectionString = DatabaseSettings.ConnectionString(module);
+        module.Services.AddSingleton(_ => new NotificationsDatabase(connectionString));
+        module.Services.AddScoped<NotificationStore>();
+    }
+
     public Task<NotificationMessage> DeliverAsync(NotificationMessage request, CancellationToken cancellationToken)
     {
         if (request.Id == Guid.Empty || request.ShipmentId == Guid.Empty || string.IsNullOrWhiteSpace(request.Email)
@@ -109,20 +132,4 @@ public sealed class NotificationsModule(ParcelStore store) : INotificationsModul
 
     public Task<NotificationInbox> GetInboxAsync(ShipmentRequest request, CancellationToken cancellationToken)
         => store.GetInboxAsync(request.ShipmentId, cancellationToken);
-}
-
-public static class ParcelStorageExtensions
-{
-    public static IServiceCollection AddParcelStorage(this IServiceCollection services,
-        IConfiguration configuration, string hostName)
-    {
-        var connectionString = configuration.GetConnectionString("Parcel")
-            ?? throw new InvalidOperationException("ConnectionStrings:Parcel is required.");
-        services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
-        services.AddSingleton(new SampleHostIdentity(hostName));
-        services.AddScoped<ParcelStore>();
-        if (configuration.GetValue("Outbox:Enabled", true))
-            services.AddHostedService<NotificationOutboxWorker>();
-        return services;
-    }
 }

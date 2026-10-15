@@ -72,13 +72,24 @@ def await_notifications(shipment_id, count):
     raise AssertionError(f"Expected {count} notifications: {result}")
 
 
+def await_web_message(shipment_id, message_id):
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        result = web_request(f"/api/shipments/{shipment_id}")
+        messages = [message for message in result["notifications"] if message["id"] == message_id]
+        if messages:
+            assert len(messages) == 1
+            return messages[0]
+        time.sleep(0.1)
+    raise AssertionError(f"Message {message_id} did not reach the web inbox")
+
+
 class Runner:
-    def __init__(self):
+    def __init__(self, web_mode=None):
+        self.web_mode = web_mode
         self.processes = {}
         self.logs = {}
         LOGS.mkdir(parents=True, exist_ok=True)
-        for host in HOSTS:
-            (LOGS / f"{host}.log").write_text("")
 
     def prepare(self, build):
         for port in (5101, 5102, 5103, 5104, 5105):
@@ -89,6 +100,8 @@ class Runner:
                     probe.bind(("127.0.0.1", port))
                 except OSError as error:
                     raise RuntimeError(f"Port {port} is occupied. Stop the previous POC before launching another.") from error
+        for host in HOSTS:
+            (LOGS / f"{host}.log").write_text("")
         if build:
             with (LOGS / "build.log").open("w") as output:
                 result = subprocess.run(["dotnet", "build", "MicroModules.sln"], cwd=ROOT, stdout=output, stderr=subprocess.STDOUT)
@@ -102,16 +115,17 @@ class Runner:
             raise RuntimeError(f"Docker Compose failed; see {LOGS / 'compose.log'}")
         # Compose init scripts only run for a new volume. Apply this idempotent schema
         # explicitly so retained counter-demo databases also work without deleting data.
-        with (ROOT / "samples" / "database" / "init.sql").open("rb") as schema:
-            result = subprocess.run(["docker", "compose", "exec", "-T", "postgres", "psql",
-                                     "-U", "micro_modules", "-d", "micro_modules", "-v", "ON_ERROR_STOP=1"],
-                                    cwd=ROOT, stdin=schema, capture_output=True)
-        if result.returncode:
-            raise RuntimeError(f"Schema initialization failed: {result.stderr.decode()}")
+        for script in sorted((ROOT / "samples" / "database").glob("*.sql")):
+            with script.open("rb") as schema:
+                result = subprocess.run(["docker", "compose", "exec", "-T", "postgres", "psql",
+                                         "-U", "micro_modules", "-d", "micro_modules", "-v", "ON_ERROR_STOP=1"],
+                                        cwd=ROOT, stdin=schema, capture_output=True)
+            if result.returncode:
+                raise RuntimeError(f"Schema initialization failed for {script.name}: {result.stderr.decode()}")
         for host in ("SHIPMENTS", "ALL", "API", "WEB"):
             self.start(host)
 
-    def start(self, host, primary=None, outbox_enabled=True):
+    def start(self, host, primary=None, outbox_enabled=None, web_mode=None, overrides=None):
         if host in self.processes and self.processes[host].poll() is None:
             print(f"{host} is already running.", flush=True)
             return
@@ -124,8 +138,17 @@ class Runner:
         environment["ASPNETCORE_URLS"] = f"http://127.0.0.1:{port}"
         environment["ASPNETCORE_ENVIRONMENT"] = "Development"
         if primary:
-            environment["MicroModules__Services__Endpoints__0"] = primary
-        environment["Outbox__Enabled"] = str(outbox_enabled).lower()
+            for module in ("rates", "shipments", "notifications"):
+                environment[f"MicroModules__{module}__Endpoints__0"] = primary
+        if outbox_enabled is not None:
+            environment["MicroModules__shipments__Outbox__Enabled"] = str(outbox_enabled).lower()
+        if host == "WEB":
+            mode = web_mode or self.web_mode
+            if mode is not None:
+                environment["MicroModules__shipments__Mode"] = "Remote" if mode == "remote" else "Local"
+                environment["MicroModules__notifications__Mode"] = "Local" if mode == "local" else "Remote"
+        if overrides:
+            environment.update(overrides)
         output = (LOGS / f"{host}.log").open("a")
         self.logs[host] = output
         process = subprocess.Popen(["dotnet", str(assembly)], cwd=directory, env=environment,
@@ -333,6 +356,32 @@ def verify(runner):
     for host in ("SHIPMENTS", "ALL"):
         runner.start(host)
     print("PASS: web requests use HTTP only and return a clear error when remote services are unavailable", flush=True)
+    # Change composition through configuration, keeping the web adapters identical.
+    for host in ("API", "SHIPMENTS", "ALL", "WEB"):
+        runner.stop(host)
+    runner.start("WEB", web_mode="local")
+    assert web_request("/api/shipments")["servedBy"] == "WebApp"
+    assert web_request(f"/api/shipments/{shipment_id}")["servedBy"] == "WebApp"
+    local_draft = {"operationId": str(uuid.uuid4()), "subject": "Local update", "body": "No other application hosts are running."}
+    web_request(f"/api/shipments/{shipment_id}/notifications", local_draft, expected=202)
+    assert await_web_message(shipment_id, local_draft["operationId"])["body"] == local_draft["body"]
+    print("PASS: fully local WebApp handles shipments and notification delivery with every other host stopped", flush=True)
+    runner.stop("WEB")
+    # Only WebApp's worker should claim this row, proving its remote delivery path.
+    runner.start("SHIPMENTS", outbox_enabled=False)
+    runner.start("WEB", web_mode="mixed", overrides={
+        "MicroModules__notifications__ConnectionString": "invalid-but-unused",
+        "MicroModules__rates__Mode": "Remote",
+        "MicroModules__rates__Endpoints__0": "http://127.0.0.1:5102",
+    })
+    assert web_request("/api/shipments")["servedBy"] == "WebApp"
+    mixed_draft = {"operationId": str(uuid.uuid4()), "subject": "Mixed update", "body": "Local shipment, remote notification delivery."}
+    web_request(f"/api/shipments/{shipment_id}/notifications", mixed_draft, expected=202)
+    assert await_web_message(shipment_id, mixed_draft["operationId"])["body"] == mixed_draft["body"]
+    final_web_logs = (LOGS / "WEB.log").read_text()
+    assert "Module shipments operation list mode local" in final_web_logs
+    assert "Module notifications operation deliver mode http-client" in final_web_logs, "Mixed WebApp did not dispatch through remote Notifications"
+    print("PASS: mixed WebApp uses local Shipments and remote Notifications without initializing notification storage", flush=True)
     # Exercise failures around notification acknowledgement in an isolated database schema.
     environment = os.environ.copy()
     environment["PARCEL_TEST_CONNECTION"] = "Host=127.0.0.1;Port=55432;Database=micro_modules;Username=micro_modules;Password=micro_modules_dev"
@@ -347,8 +396,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("run", "smoke"), nargs="?", default="run")
     parser.add_argument("--no-build", action="store_true")
+    parser.add_argument("--web-mode", choices=("remote", "local", "mixed"),
+                        help="Override WebApp configuration (smoke always verifies all three modes)")
     arguments = parser.parse_args()
-    runner = Runner()
+    runner = Runner(arguments.web_mode if arguments.mode == "run" else "remote")
     def interrupt(*_):
         raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM, interrupt)

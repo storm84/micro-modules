@@ -17,7 +17,7 @@ public sealed class NotificationOutboxWorker(IServiceScopeFactory scopes,
             try
             {
                 await using var scope = scopes.CreateAsyncScope();
-                var dataSource = scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>();
+                var dataSource = scope.ServiceProvider.GetRequiredService<ShipmentsDatabase>().Source;
                 var notifications = scope.ServiceProvider.GetRequiredService<INotificationsModule>();
                 if (await DispatchOneAsync(dataSource, notifications, stoppingToken))
                     continue;
@@ -46,7 +46,7 @@ public sealed class NotificationOutboxWorker(IServiceScopeFactory scopes,
             if (!await reader.ReadAsync(token))
                 return false;
             id = reader.GetGuid(0);
-            message = ParcelStore.Deserialize<NotificationMessage>(reader.GetString(1));
+            message = ParcelJson.Deserialize<NotificationMessage>(reader.GetString(1));
         }
         string? errorMessage = null;
         try

@@ -1,4 +1,6 @@
 using MicroModules;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.FileProviders;
 using Npgsql;
 using Parcel.Contracts;
 using Parcel.Modules;
@@ -36,9 +38,9 @@ public sealed class ParcelTests
     {
         await using var database = await IsolatedDatabase.CreateAsync();
         var source = database.Source;
-        var store = new ParcelStore(source);
-        var shipments = new ShipmentsModule(store, new RatesModule(), new("test"));
-        var inbox = new NotificationsModule(store);
+        var store = new ShipmentStore(database.Shipments);
+        var shipments = new ShipmentsModule(store, new RatesModule(), new TestEnvironment("test"));
+        var inbox = new NotificationsModule(new NotificationStore(database.Notifications));
         var address = new Address("Alex", "Example Street 1", "11122", "Stockholm");
         var booking = new BookParcelRequest(Guid.NewGuid(), address, address, "alex@example.test", 1500, "standard");
         var shipment = (await shipments.BookAsync(booking, CancellationToken.None)).Shipment;
@@ -73,12 +75,12 @@ public sealed class ParcelTests
     public async Task Shutdown_after_delivery_rolls_back_acknowledgement_and_releases_the_row_lock()
     {
         await using var database = await IsolatedDatabase.CreateAsync();
-        var store = new ParcelStore(database.Source);
-        var module = new ShipmentsModule(store, new RatesModule(), new("test"));
+        var store = new ShipmentStore(database.Shipments);
+        var module = new ShipmentsModule(store, new RatesModule(), new TestEnvironment("test"));
         var address = new Address("Alex", "Example Street 1", "11122", "Stockholm");
         var booking = new BookParcelRequest(Guid.NewGuid(), address, address, "alex@example.test", 100, "standard");
         var shipment = (await module.BookAsync(booking, CancellationToken.None)).Shipment;
-        var inbox = new NotificationsModule(store);
+        var inbox = new NotificationsModule(new NotificationStore(database.Notifications));
         using var shutdown = new CancellationTokenSource();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             NotificationOutboxWorker.DispatchOneAsync(database.Source,
@@ -104,8 +106,8 @@ public sealed class ParcelTests
     public async Task Competing_transitions_commit_one_event_and_failed_operations_can_be_corrected()
     {
         await using var database = await IsolatedDatabase.CreateAsync();
-        var store = new ParcelStore(database.Source);
-        var module = new ShipmentsModule(store, new RatesModule(), new("test"));
+        var store = new ShipmentStore(database.Shipments);
+        var module = new ShipmentsModule(store, new RatesModule(), new TestEnvironment("test"));
         var address = new Address("Alex", "Example Street 1", "11122", "Stockholm");
         var booking = new BookParcelRequest(Guid.NewGuid(), address, address, "alex@example.test", 100, "standard");
         var shipment = (await module.BookAsync(booking, CancellationToken.None)).Shipment;
@@ -133,8 +135,8 @@ public sealed class ParcelTests
     [InlineData(0, 101)]
     public async Task Listing_validates_page_bounds_before_accessing_storage(int offset, int limit)
     {
-        await using var source = NpgsqlDataSource.Create("Host=localhost;Database=unused;Username=unused");
-        var module = new ShipmentsModule(new(source), new RatesModule(), new("test"));
+        await using var source = new ShipmentsDatabase("Host=localhost;Database=unused;Username=unused");
+        var module = new ShipmentsModule(new(source), new RatesModule(), new TestEnvironment("test"));
         var error = await Assert.ThrowsAsync<ModuleFaultException>(() => module.ListAsync(new(offset, limit), CancellationToken.None));
         Assert.Equal("invalid-page", error.Code);
     }
@@ -145,8 +147,8 @@ public sealed class ParcelTests
     [InlineData(null, "Message")]
     public async Task Custom_notifications_validate_content_before_accessing_storage(string? subject, string body)
     {
-        await using var source = NpgsqlDataSource.Create("Host=localhost;Database=unused;Username=unused");
-        var module = new ShipmentsModule(new(source), new RatesModule(), new("test"));
+        await using var source = new ShipmentsDatabase("Host=localhost;Database=unused;Username=unused");
+        var module = new ShipmentsModule(new(source), new RatesModule(), new TestEnvironment("test"));
         var error = await Assert.ThrowsAsync<ModuleFaultException>(() => module.SendNotificationAsync(
             new(Guid.NewGuid(), Guid.NewGuid(), subject!, body), CancellationToken.None));
         Assert.Equal("invalid-notification", error.Code);
@@ -160,8 +162,8 @@ public sealed class ParcelTests
     public async Task Listing_pages_bookings_and_custom_notifications_use_the_durable_replay_path()
     {
         await using var database = await IsolatedDatabase.CreateAsync();
-        var store = new ParcelStore(database.Source);
-        var module = new ShipmentsModule(store, new RatesModule(), new("test"));
+        var store = new ShipmentStore(database.Shipments);
+        var module = new ShipmentsModule(store, new RatesModule(), new TestEnvironment("test"));
         Assert.Empty((await module.ListAsync(new(), CancellationToken.None)).Shipments);
         var address = new Address("Alex", "Example Street 1", "11122", "Stockholm");
         var booking = new BookParcelRequest(Guid.NewGuid(), address, address, "alex@example.test", 100, "standard");
@@ -191,7 +193,7 @@ public sealed class ParcelTests
         await Assert.ThrowsAsync<ModuleFaultException>(() => module.SendNotificationAsync(
             request with { OperationId = Guid.Empty }, CancellationToken.None));
         Assert.Single((await module.GetAsync(new(original.Id), CancellationToken.None)).Shipment.Events);
-        var inbox = new NotificationsModule(store);
+        var inbox = new NotificationsModule(new NotificationStore(database.Notifications));
         while (await NotificationOutboxWorker.DispatchOneAsync(database.Source, inbox, CancellationToken.None)) { }
         var messages = (await inbox.GetInboxAsync(new(original.Id), CancellationToken.None)).Messages;
         Assert.Equal(2, messages.Length);
@@ -260,24 +262,46 @@ public sealed class DatabaseFactAttribute : FactAttribute
     }
 }
 
-internal sealed class IsolatedDatabase(NpgsqlDataSource source, string connectionString, string schema) : IAsyncDisposable
+internal sealed class TestEnvironment(string name) : IHostEnvironment
 {
-    public NpgsqlDataSource Source { get; } = source;
+    public string ApplicationName { get; set; } = name;
+    public string EnvironmentName { get; set; } = "Testing";
+    public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+    public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+}
+
+internal sealed class IsolatedDatabase(ShipmentsDatabase shipments, NotificationsDatabase notifications,
+    string connectionString, string schemaPrefix) : IAsyncDisposable
+{
+    public ShipmentsDatabase Shipments { get; } = shipments;
+    public NotificationsDatabase Notifications { get; } = notifications;
+    public NpgsqlDataSource Source => Shipments.Source;
+    // NpgsqlDataSource.ConnectionString intentionally omits the password. Retain fixture inputs for new pools.
+    public string ShipmentsConnectionString => new NpgsqlConnectionStringBuilder(connectionString)
+        { SearchPath = schemaPrefix + "_shipments" }.ConnectionString;
+    public string NotificationsConnectionString => new NpgsqlConnectionStringBuilder(connectionString)
+        { SearchPath = schemaPrefix + "_notifications" }.ConnectionString;
 
     public static async Task<IsolatedDatabase> CreateAsync()
     {
         var connectionString = Environment.GetEnvironmentVariable("PARCEL_TEST_CONNECTION")!;
         var schema = "parcel_test_" + Guid.NewGuid().ToString("N");
         await using var admin = NpgsqlDataSource.Create(connectionString);
-        await using (var create = admin.CreateCommand($"CREATE SCHEMA {schema}"))
+        await using (var create = admin.CreateCommand($"CREATE SCHEMA {schema}_shipments; CREATE SCHEMA {schema}_notifications"))
             await create.ExecuteNonQueryAsync();
-        var builder = new NpgsqlConnectionStringBuilder(connectionString) { SearchPath = schema };
-        var source = NpgsqlDataSource.Create(builder.ConnectionString);
-        var database = new IsolatedDatabase(source, connectionString, schema);
+        var shipments = new ShipmentsDatabase(new NpgsqlConnectionStringBuilder(connectionString)
+            { SearchPath = schema + "_shipments" }.ConnectionString);
+        var notifications = new NotificationsDatabase(new NpgsqlConnectionStringBuilder(connectionString)
+            { SearchPath = schema + "_notifications" }.ConnectionString);
+        var database = new IsolatedDatabase(shipments, notifications, connectionString, schema);
         try
         {
-            await using var initialize = source.CreateCommand(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "init.sql")));
-            await initialize.ExecuteNonQueryAsync();
+            await using var initializeShipments = shipments.Source.CreateCommand(
+                await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "001-shipments.sql")));
+            await initializeShipments.ExecuteNonQueryAsync();
+            await using var initializeNotifications = notifications.Source.CreateCommand(
+                await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "002-notifications.sql")));
+            await initializeNotifications.ExecuteNonQueryAsync();
             return database;
         }
         catch { await database.DisposeAsync(); throw; }
@@ -285,10 +309,11 @@ internal sealed class IsolatedDatabase(NpgsqlDataSource source, string connectio
 
     public async ValueTask DisposeAsync()
     {
-        await Source.DisposeAsync();
+        await Shipments.DisposeAsync();
+        await Notifications.DisposeAsync();
         await using var admin = NpgsqlDataSource.Create(connectionString);
-        // Only the randomly named schema created by this fixture is removed.
-        await using var drop = admin.CreateCommand($"DROP SCHEMA {schema} CASCADE");
+        // Only the randomly named schemas created by this fixture are removed.
+        await using var drop = admin.CreateCommand($"DROP SCHEMA {schemaPrefix}_shipments CASCADE; DROP SCHEMA {schemaPrefix}_notifications CASCADE");
         await drop.ExecuteNonQueryAsync();
     }
 }
