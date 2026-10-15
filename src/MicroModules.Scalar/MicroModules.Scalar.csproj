@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Optional Scalar API reference and OpenAPI integration for MicroModules.</Description>
+    <IsPackable>true</IsPackable>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../MicroModules.AspNetCore/MicroModules.AspNetCore.csproj" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.13" />
+    <PackageReference Include="Scalar.AspNetCore" Version="2.18.0" />
+  </ItemGroup>
+</Project>
