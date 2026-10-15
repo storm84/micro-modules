@@ -1,14 +1,13 @@
-using System.Text.Json;
 using MicroModules;
 using Npgsql;
-using NpgsqlTypes;
 using Parcel.Contracts;
+using static Parcel.Modules.ParcelJson;
 
 namespace Parcel.Modules;
 
-public sealed class ParcelStore(NpgsqlDataSource dataSource)
+public sealed class ShipmentStore(ShipmentsDatabase database)
 {
-    internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private NpgsqlDataSource DataSource => database.Source;
 
     public Task<Shipment> BookAsync(BookParcelRequest request, Quote quote, CancellationToken token)
         => ExecuteOnceAsync(request.OperationId, "book", request, async (connection, transaction) =>
@@ -58,13 +57,13 @@ public sealed class ParcelStore(NpgsqlDataSource dataSource)
 
     public async Task<Shipment> GetAsync(Guid id, CancellationToken token)
     {
-        await using var connection = await dataSource.OpenConnectionAsync(token);
+        await using var connection = await DataSource.OpenConnectionAsync(token);
         return await ReadShipmentAsync(connection, null, id, false, token);
     }
 
     public async Task<ShipmentSummary[]> ListAsync(ListShipmentsRequest request, CancellationToken token)
     {
-        await using var command = dataSource.CreateCommand("""
+        await using var command = DataSource.CreateCommand("""
             SELECT payload::text FROM parcel_shipments
             ORDER BY payload->'events'->0->>'occurredAt' DESC, id DESC
             OFFSET @offset LIMIT @limit
@@ -111,7 +110,7 @@ public sealed class ParcelStore(NpgsqlDataSource dataSource)
     {
         if (operationId == Guid.Empty)
             throw new ModuleFaultException("operation-id-required", "Provide a non-empty operation ID.");
-        await using var connection = await dataSource.OpenConnectionAsync(token);
+        await using var connection = await DataSource.OpenConnectionAsync(token);
         await using var transaction = await connection.BeginTransactionAsync(token);
         // An overlapping duplicate waits for the winner to commit or roll back.
         await using var reserve = new NpgsqlCommand("""
@@ -172,50 +171,4 @@ public sealed class ParcelStore(NpgsqlDataSource dataSource)
         await command.ExecuteNonQueryAsync(token);
     }
 
-    public async Task<NotificationMessage> DeliverAsync(NotificationMessage message, CancellationToken token)
-    {
-        await using var connection = await dataSource.OpenConnectionAsync(token);
-        await using var transaction = await connection.BeginTransactionAsync(token);
-        await using var insert = new NpgsqlCommand("""
-            INSERT INTO parcel_notification_inbox (id, shipment_id, payload)
-            VALUES (@id, @shipment, @payload) ON CONFLICT (id) DO NOTHING
-            """, connection, transaction);
-        insert.Parameters.AddWithValue("id", message.Id);
-        insert.Parameters.AddWithValue("shipment", message.ShipmentId);
-        AddJson(insert, "payload", message);
-        await insert.ExecuteNonQueryAsync(token);
-        await using var lookup = new NpgsqlCommand(
-            "SELECT payload = @payload, payload::text FROM parcel_notification_inbox WHERE id = @id", connection, transaction);
-        lookup.Parameters.AddWithValue("id", message.Id);
-        AddJson(lookup, "payload", message);
-        await using var reader = await lookup.ExecuteReaderAsync(token);
-        if (!await reader.ReadAsync(token))
-            throw new InvalidOperationException("Delivered notification must exist.");
-        if (!reader.GetBoolean(0))
-            throw new ModuleFaultException("notification-id-conflict", "Notification ID has a different payload.", 409);
-        var result = Deserialize<NotificationMessage>(reader.GetString(1));
-        await reader.DisposeAsync();
-        await transaction.CommitAsync(token);
-        return result;
-    }
-
-    public async Task<NotificationInbox> GetInboxAsync(Guid shipmentId, CancellationToken token)
-    {
-        await using var command = dataSource.CreateCommand("""
-            SELECT payload::text FROM parcel_notification_inbox WHERE shipment_id = @id
-            ORDER BY payload->>'createdAt', id
-            """);
-        command.Parameters.AddWithValue("id", shipmentId);
-        await using var reader = await command.ExecuteReaderAsync(token);
-        var messages = new List<NotificationMessage>();
-        while (await reader.ReadAsync(token))
-            messages.Add(Deserialize<NotificationMessage>(reader.GetString(0)));
-        return new(messages.ToArray());
-    }
-
-    internal static void AddJson(NpgsqlCommand command, string name, object value)
-        => command.Parameters.AddWithValue(name, NpgsqlDbType.Jsonb, JsonSerializer.Serialize(value, Json));
-
-    internal static T Deserialize<T>(string payload)
-        => JsonSerializer.Deserialize<T>(payload, Json) ?? throw new InvalidOperationException("Stored payload is null.");
 }

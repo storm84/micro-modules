@@ -2,6 +2,6 @@
   <PropertyGroup><IsPackable>false</IsPackable></PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/MicroModules/MicroModules.csproj" />
-    <ProjectReference Include="../Parcel.Contracts/Parcel.Contracts.csproj" />
+    <ProjectReference Include="../Parcel.Modules/Parcel.Modules.csproj" />
   </ItemGroup>
 </Project>

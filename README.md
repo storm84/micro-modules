@@ -30,7 +30,7 @@ At the `parcel>` prompt:
 - `start-shipments` restores its preferred service.
 - `status` shows running host processes; `quit` or Ctrl-C stops them.
 
-Postgres and its data remain available. AllInOne also works when both other hosts are stopped. The two service hosts use the same logical database, and either can process pending notifications.
+Postgres and its data remain available. AllInOne also works when all other application hosts are stopped. The two service hosts use the same logical data. Each local module owns its connection pool, and either Shipments host can process pending notifications.
 
 ### Open the web app
 
@@ -38,7 +38,17 @@ Browse [Parcel desk](http://127.0.0.1:5105) to view shipments, tracking history,
 
 Shipments are listed newest first, with Newer/Older paging and a Refresh button. If the database is empty, enter `demo` at the launcher's prompt to create a shipment. Use `stop-shipments` to see the web app continue through AllInOne.
 
-WebApp references only `MicroModules` and `Parcel.Contracts`. It registers remote Shipments and Notifications contracts, serves static HTML/CSS/JavaScript, and maps thin `/api` adapters for the browser. It has no local modules, database connection, outbox worker, or module endpoints. The other hosts own all business validation and persistence.
+WebApp uses configurable Shipments and Notifications registrations. Its default mode runs both remotely, with no local pools or workers. It references `Parcel.Modules` so the same web adapters can run local implementations when selected in configuration. It serves static HTML/CSS/JavaScript and thin `/api` adapters, without exposing module endpoints.
+
+Choose a composition when launching:
+
+```sh
+python3 scripts/poc.py --web-mode remote # default: both modules remote
+python3 scripts/poc.py --web-mode local  # both local; Rates is added automatically
+python3 scripts/poc.py --web-mode mixed  # Shipments local, Notifications remote
+```
+
+Without a switch, the launcher respects WebApp’s appsettings and normal environment overrides. These switches explicitly set the individual module modes through environment configuration; the browser interface and `/api` adapters use the same code in every mode. WebApp's module sections include the local demo connection settings so switching modes needs no code changes. Stop the current launcher before starting another.
 
 ### Walk through the APIs
 
@@ -109,7 +119,7 @@ Shipments saves each booking/tracking change, its operation result, and any noti
 
 Both service hosts run workers. Row locking with `SKIP LOCKED` prevents them processing the same pending row simultaneously. Failed delivery is retried after two seconds, with attempts and the latest error recorded in the outbox. Delivery and acknowledgement commit separately: a crash between them causes a safe replay rather than a second inbox message. Booking succeeds once its transaction commits, independently of notification delivery.
 
-The worker is application code in the sample. MicroModules does not provide durable events or outbox processing. `Outbox:Enabled=false` disables a host's worker for restart demonstrations and testing.
+The worker is application code in the sample. MicroModules does not provide durable events or outbox processing. `MicroModules:shipments:Outbox:Enabled=false` disables a host's worker for restart demonstrations and testing.
 
 ### Automated verification and retained data
 
@@ -119,9 +129,9 @@ python3 scripts/poc.py smoke
 
 This checks quotes, validation, the full parcel lifecycle, local and remote execution, shared data, concurrent writes, operation conflicts, duplicate requests, failover, recovery, pending notifications across restarts, and lost responses after booking and custom-notification commits. It also checks the remote-only web APIs, shipment paging, notification validation and replay, and service-unavailable errors. A test-only forwarding proxy on port 5104 creates the lost-response case; the application has no fault-injection endpoints.
 
-The smoke run also executes parcel database tests in temporary isolated schemas, covering failed delivery, delivery before acknowledgement failure, competing dispatchers, and conflicting tracking transitions. It uses fresh IDs and retained data safely. Logs are written under `artifacts/poc/`.
+The smoke run also verifies fully local WebApp operation with all other application hosts stopped, mixed local/remote composition, automatic Rates setup, and remote Rates overrides. Parcel database tests use separate schemas containing only each module’s tables, covering independent connections, failed delivery, delivery before acknowledgement failure, competing dispatchers, and conflicting tracking transitions. It uses fresh IDs and retained data safely. Logs are written under `artifacts/poc/`.
 
-The launcher applies the idempotent schema on every run, including against an existing counter-demo volume. Old counter tables remain unused; no data reset is required.
+The launcher explicitly applies both module-owned idempotent schema scripts on every run, including against an existing counter-demo volume. Old counter tables remain unused; no data reset is required.
 
 ```sh
 # Stop the database and retain its data.
@@ -169,45 +179,92 @@ A consuming module injects `IRatesModule` and calls it. It references the contra
 
 ### Compose a host
 
-Hosts exposing HTTP reference `MicroModules.AspNetCore`. Remote-only callers need only `MicroModules`.
+Pass the host configuration once, then register the root modules it needs:
 
 ```csharp
-builder.Services.AddMicroModules(modules =>
+builder.Services.AddMicroModules(builder.Configuration, modules =>
 {
-    modules.AddLocal<IRatesModule, RatesModule>();
+    modules.AddModule<IShipmentsModule, ShipmentsModule>();
 });
+```
 
+`AddModule<TContract, TImplementation>()` selects local execution by default. `AddLocal<TContract, TImplementation>()` always selects local execution, including automatic setup. `AddRemote<TContract>()` always selects remote execution and reads the contract's configuration section. Contracts-only callers can use `AddRemote` without referencing implementations; switching to local execution requires the implementation assembly.
+
+Call `AddMicroModules` once per host. Contract proxies and implementations are scoped. Local modules use ordinary constructor injection. `MicroModules.AspNetCore` is needed only when exposing module HTTP endpoints:
+
+```csharp
 var app = builder.Build();
 app.MapMicroModules();
 app.Run();
 ```
 
-Call `AddMicroModules` once per host and compose all registrations inside its callback. Contract proxies and local implementations use scoped registrations by default. Host-specific dependencies remain normal DI registrations.
+### Give each module its own configuration
 
-For a remotely hosted dependency:
-
-```csharp
-builder.Services.AddMicroModules(modules =>
-{
-    modules.AddRemote<IRatesModule>(builder.Configuration.GetSection("MicroModules:Rates"));
-});
-```
+Sections live at `MicroModules:{contract-id}`. Here Shipments runs locally, Rates runs remotely, and Notifications defaults to local:
 
 ```json
 {
   "MicroModules": {
-    "Rates": {
+    "shipments": {
+      "Mode": "Local",
+      "ConnectionString": "Host=127.0.0.1;Port=55432;Database=micro_modules;Username=micro_modules;Password=micro_modules_dev",
+      "Outbox": { "Enabled": true }
+    },
+    "rates": {
+      "Mode": "Remote",
       "Endpoints": ["http://127.0.0.1:5102", "http://127.0.0.1:5103"],
       "AttemptTimeoutSeconds": 2,
       "TotalTimeoutSeconds": 5
+    },
+    "notifications": {
+      "ConnectionString": "Host=127.0.0.1;Port=55432;Database=micro_modules;Username=micro_modules;Password=micro_modules_dev"
     }
   }
 }
 ```
 
-Programmatic registration is also supported:
+The library handles `Mode`, `Endpoints`, and remote timeouts; the module interprets its other settings. A remote module needs endpoints but does not validate or initialize local resources, workers, or dependencies. Local database settings can therefore be absent for remote execution.
+
+Normal .NET configuration providers apply. For example, `MicroModules__rates__Mode=Remote` and `MicroModules__rates__Endpoints__0=http://127.0.0.1:5102` select remote Rates. Composition and remote options are resolved during registration and require a restart to change. Contract versions retain separate routes and registrations, sharing the configuration section for their module ID.
+
+Explicit choices take precedence: `AddLocal` wins over `AddRemote`, which wins over configured mode. Otherwise an omitted mode means local. Each contract has one execution choice for all callers in a host, independent of registration order. A local failure is returned directly and never triggers remote fallback.
+
+### Let the module register its dependencies and resources
+
+Implement the optional `IMicroModule` setup interface on the implementation. For example, the sample's Shipments setup is:
 
 ```csharp
+public static void Configure(ModuleSetupContext module)
+{
+    module.AddDependency<IRatesModule, RatesModule>();
+    module.AddDependency<INotificationsModule, NotificationsModule>();
+
+    var connectionString = module.Configuration["ConnectionString"]
+        ?? throw new ArgumentException(module.Configuration.Path + ":ConnectionString is required.");
+    module.Services.AddSingleton(_ => new ShipmentsDatabase(connectionString));
+    module.Services.AddScoped<ShipmentStore>();
+    if (module.Configuration.GetValue("Outbox:Enabled", true))
+        module.Services.AddHostedService<NotificationOutboxWorker>();
+}
+```
+
+Declare this method on a class implementing both its contract and `IMicroModule`. `ModuleSetupContext` exposes the module's `Configuration`, the host's `Services`, and `AddDependency<TContract, TImplementation>()`. Each dependency supplies a default implementation while honoring the host's explicit choices and its own module section. Dependencies register recursively, with setup called once per resolved local contract. Cycles report the dependency path; conflicting inferred implementations require an explicit host choice.
+
+Setup runs synchronously without constructing the implementation. Register factories for disposable resources and let DI own their lifetimes; perform no connection opening, external I/O, or schema changes in the hook. The core library has no database-provider dependency. Existing classes without `IMicroModule` continue to work with ordinary DI registrations.
+
+The sample uses distinct `ShipmentsDatabase` and `NotificationsDatabase` DI types, each owning its pool, rather than a shared unqualified `NpgsqlDataSource`. Shipments owns shipment data, operation replay, and the outbox; Notifications owns its inbox. They can use the same database or independently configured databases. The outbox worker reads only Shipments' storage and invokes Notifications through its contract. Each database must have its owner's schema initialized explicitly; registration does not create or migrate tables.
+
+### Existing registration styles
+
+The original overloads remain available:
+
+```csharp
+builder.Services.AddMicroModules(modules =>
+{
+    modules.AddRemote<IRatesModule>(builder.Configuration.GetSection("MicroModules:rates"));
+});
+
+// Inside a registration callback:
 modules.AddRemote<IRatesModule>(options =>
 {
     options.Endpoints.Add(new Uri("https://rates.internal"));
@@ -215,9 +272,9 @@ modules.AddRemote<IRatesModule>(options =>
 });
 ```
 
-Endpoint URLs may have a base-path prefix. Configure unique absolute HTTP(S) URLs without embedded credentials, query strings, or fragments. Ordered endpoints must expose the same contract version and logical data.
+The overload without configuration supplies empty module settings, suitable for implementations that do not need configuration. Explicit duplicate registrations still fail; repeated inferred dependencies are deduplicated.
 
-If the same contract has local and remote registrations, local execution always wins regardless of registration order. A local failure is returned to the caller; it never causes remote failover. `MapMicroModules` exposes only local registrations and invokes their actual implementations, avoiding HTTP-to-proxy recursion.
+Endpoint URLs may have a base-path prefix. Configure unique absolute HTTP(S) URLs without embedded credentials, query strings, or fragments. Ordered endpoints must expose the same contract version and logical data. `MapMicroModules` exposes only selected local contracts, including automatically registered dependencies, and invokes their implementations directly.
 
 ### Contract rules
 
